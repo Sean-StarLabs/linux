@@ -114,12 +114,20 @@ static ssize_t get_modalias(char *buffer, size_t buffer_size)
 		if (!c)
 			continue;
 
-		t = kmalloc(strlen(c) + 1, GFP_KERNEL);
-		if (!t)
-			break;
-		ascii_filter(t, c);
-		l = scnprintf(p, left, ":%s%s", f->prefix, t);
-		kfree(t);
+		if (f->field == DMI_EC_FIRMWARE_RELEASE) {
+			int major, minor;
+			if (sscanf(c, "%d.%d", &major, &minor) == 2)
+				l = scnprintf(p, left, ":%s%d.%02d", f->prefix, major, minor);
+			else
+				l = scnprintf(p, left, ":%s%s", f->prefix, c);
+		} else {
+			t = kmalloc(strlen(c) + 1, GFP_KERNEL);
+			if (!t)
+				break;
+			ascii_filter(t, c);
+			l = scnprintf(p, left, ":%s%s", f->prefix, t);
+			kfree(t);
+		}
 
 		p += l;
 		left -= l;

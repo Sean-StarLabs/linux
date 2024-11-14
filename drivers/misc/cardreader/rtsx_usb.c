@@ -406,6 +406,7 @@ int rtsx_usb_switch_clock(struct rtsx_ucr *ucr, unsigned int card_clock,
 {
 	int ret;
 	u8 n, clk_divider, mcu_cnt, div;
+	u16 card_status;
 
 	if (!card_clock) {
 		ucr->cur_clk = 0;
@@ -438,7 +439,64 @@ int rtsx_usb_switch_clock(struct rtsx_ucr *ucr, unsigned int card_clock,
 	if (card_clock == ucr->cur_clk)
 		return 0;
 
-	/* Converting clock value into internal settings: n and div */
+	/* Determine SSC depth based on card type and mode */
+	ret = rtsx_usb_get_card_status(ucr, &card_status);
+	if (ret < 0)
+		return ret;
+
+	if (card_status & SD_CD) {
+		if (CHK_SD_SDR104(card_status)) {
+			ssc_depth = ucr->option.ssc_depth_sd_sdr104;
+		} else if (CHK_SD_SDR50(card_status)) {
+			ssc_depth = ucr->option.ssc_depth_sd_sdr50;
+		} else if (CHK_SD_DDR50(card_status)) {
+			ssc_depth = double_depth(ucr->option.ssc_depth_sd_ddr50);
+		} else if (CHK_SD_HS(card_status)) {
+			ssc_depth = double_depth(ucr->option.ssc_depth_sd_hs);
+		} else {
+			ssc_depth = double_depth(ucr->option.ssc_depth_low_speed);
+		}
+	} else if (card_status & MS_CD) {
+		if (CHK_MSPRO(card_status)) {
+			if (CHK_HG8BIT(card_status)) {
+				ssc_depth = double_depth(ucr->option.ssc_depth_ms_hg);
+			} else {
+				ssc_depth = double_depth(ucr->option.ssc_depth_ms_4bit);
+			}
+		} else {
+			if (CHK_MS4BIT(card_status)) {
+				ssc_depth = double_depth(ucr->option.ssc_depth_ms_4bit);
+			} else {
+				ssc_depth = double_depth(ucr->option.ssc_depth_low_speed);
+			}
+		}
+	} else if (card_status & XD_CD) {
+		ssc_depth = double_depth(ucr->option.ssc_depth_low_speed);
+	}
+
+	if (ssc_depth) {
+		/* Adjust SSC depth based on clock divider */
+		if (div == CLK_DIV_2) {
+			if (ssc_depth > 1)
+				ssc_depth -= 1;
+			else
+				ssc_depth = SSC_DEPTH_2M;
+		} else if (div == CLK_DIV_4) {
+			if (ssc_depth > 2)
+				ssc_depth -= 2;
+			else
+				ssc_depth = SSC_DEPTH_2M;
+		}
+	}
+
+        if (double_clk)
+                ssc_depth = double_ssc_depth(ssc_depth);
+
+	ret = rtsx_usb_write_register(ucr, SD_CFG1,
+				      SD_CLK_DIVIDE_MASK, clk_divider);
+	if (ret < 0)
+		return ret;
+
 	n = card_clock - 2;
 	if ((card_clock <= 2) || (n > MAX_DIV_N))
 		return -EINVAL;
@@ -455,9 +513,6 @@ int rtsx_usb_switch_clock(struct rtsx_ucr *ucr, unsigned int card_clock,
 		div++;
 	}
 	dev_dbg(&ucr->pusb_intf->dev, "n = %d, div = %d\n", n, div);
-
-	if (double_clk)
-		ssc_depth = double_ssc_depth(ssc_depth);
 
 	ssc_depth = revise_ssc_depth(ssc_depth, div);
 	dev_dbg(&ucr->pusb_intf->dev, "ssc_depth = %d\n", ssc_depth);
